@@ -166,7 +166,24 @@ void GNAModelSerial::Import(void *basePointer,
         InferenceEngine::OutputsDataMap& outputsDataMap) {
     is.exceptions(std::istream::failbit);
 
+    for (auto inputIndex = 0; inputIndex < modelHeader.nInputs; inputIndex++) {
+        uint32_t nameSize = 0;
+        readNBits<64>(nameSize, is);
+
+        char* inName = new char[nameSize];
+        readNBytes(inName, nameSize, is);
+        inputNames.push_back({inName});
+    }
     ImportInputs(is, basePointer, inputsDesc, inputsDataMap);
+
+    for (auto inputIndex = 0; inputIndex < modelHeader.nOutputs; inputIndex++) {
+        uint32_t nameSize = 0;
+        readNBits<64>(nameSize, is);
+
+        char* outName = new char[nameSize];
+        readNBytes(outName, nameSize, is);
+        outputNames.push_back({outName});
+    }
     ImportOutputs(is, basePointer, desc, outputsDataMap);
 
     for (auto operation = gna2Model->Operations; operation != gna2Model->Operations + gna2Model->NumberOfOperations; ++operation) {
@@ -311,9 +328,20 @@ void GNAModelSerial::Export(void * basePointer, size_t gnaGraphSize, std::ostrea
 
     writeBits(header, os);
 
+    for (auto &name : inputNames) {
+        writeBits(name.size(), os);
+        writeNBytes(name.c_str(), name.size(), os);
+    }
+
     for (const auto &input : inputs) {
         writeBits(convert_to_serial(input), os);
     }
+
+    for (auto &name : outputNames) {
+        writeBits(name.size(), os);
+        writeNBytes(name.c_str(), name.size(), os);
+    }
+
     for (const auto &output : outputs) {
         writeBits(convert_to_serial(output), os);
     }
@@ -375,7 +403,24 @@ void GNAModelSerial::Import(void *basePointer,
         InferenceEngine::OutputsDataMap& outputsDataMap) {
     is.exceptions(std::istream::failbit);
 
+    for (auto inputIndex = 0; inputIndex < modelHeader.nInputs; inputIndex++) {
+        uint32_t nameSize = 0;
+        readNBits<64>(nameSize, is);
+
+        char* inName = new char[nameSize];
+        readNBytes(inName, nameSize, is);
+        inputNames.push_back({inName});
+    }
     ImportInputs(is, basePointer, inputsDesc, inputsDataMap);
+
+    for (auto inputIndex = 0; inputIndex < modelHeader.nOutputs; inputIndex++) {
+        uint32_t nameSize = 0;
+        readNBits<64>(nameSize, is);
+
+        char* outName = new char[nameSize];
+        readNBytes(outName, nameSize, is);
+        outputNames.push_back({outName});
+    }
     ImportOutputs(is, basePointer, desc, outputsDataMap);
 
     auto readPwl = [&is, basePointer](intel_pwl_func_t & value) {
@@ -556,7 +601,17 @@ void GNAModelSerial::Export(void * basePointer, size_t gnaGraphSize, std::ostrea
 
 
     writeBits(header, os);
+    for (auto &name : inputNames) {
+        writeBits(name.size(), os);
+        writeNBytes(name.c_str(), name.size(), os);
+    }
     writeBits(convert_to_serial(inputs[0]), os);
+
+
+    for (auto &name : outputNames) {
+        writeBits(name.size(), os);
+        writeNBytes(name.c_str(), name.size(), os);
+    }
     writeBits(convert_to_serial(outputs[0]), os);
 
     for (auto & layer : layers) {
@@ -691,7 +746,7 @@ void GNAModelSerial::ImportInputs(std::istream &is,
     dataMap.clear();
 
     for (auto inputIndex = 0; inputIndex < modelHeader.nInputs; inputIndex++) {
-        std::string name = "input" + std::to_string(inputIndex);
+        std::string name = inputNames[inputIndex];
         HeaderLatest::RuntimeEndPoint input;
         is.read(reinterpret_cast<char *>(&input), sizeof(input));
         inputsDesc->getPtrInputsGlobal(name).push_back(reinterpret_cast<float*>(reinterpret_cast<uint8_t *> (basePtr) + input.descriptor_offset));
@@ -719,7 +774,7 @@ void GNAModelSerial::ImportOutputs(std::istream &is,
     desc.resize(modelHeader.nOutputs);
 
     for (auto outputIndex = 0; outputIndex < modelHeader.nOutputs; outputIndex++) {
-        std::string name = "output" + std::to_string(outputIndex);
+        std::string name = outputNames[outputIndex];
         HeaderLatest::RuntimeEndPoint output;
         is.read(reinterpret_cast<char *>(&output), sizeof(output));
         OutputDesc description;
