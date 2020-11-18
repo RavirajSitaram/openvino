@@ -88,6 +88,7 @@ void createRequestConfigsForGnaModels();
 
     InferenceEngine::InputsDataMap inputsDataMap;
     InferenceEngine::OutputsDataMap outputsDataMap;
+    std::vector<InferenceEngine::MemoryStateInternal::Ptr> memoryStates;
 
  public:
     explicit GNAPlugin(const std::map<std::string, std::string>& configMap);
@@ -136,15 +137,31 @@ void createRequestConfigsForGnaModels();
     void Wait(uint32_t sync, InferenceEngine::Blob &result) { THROW_GNA_EXCEPTION << "Not implemented"; }
 
     void Export(const std::string &fileName);
-    InferenceEngine::IExecutableNetwork::Ptr ImportNetwork(const std::string &modelFileName
-        , const std::map<std::string, std::string> &config) override { THROW_GNA_EXCEPTION << "Not implemented"; }
+
+
+    InferenceEngine::IExecutableNetwork::Ptr ImportNetwork(const std::string &modelFileName,
+                                        const std::map<std::string, std::string> &config) override {
+        THROW_GNA_EXCEPTION << "Not implemented";
+    }
+    InferenceEngine::ExecutableNetwork ImportNetwork(std::istream& networkModel,
+                                                     const InferenceEngine::RemoteContext::Ptr& context,
+                                                     const std::map<std::string, std::string> &config) {
+        THROW_GNA_EXCEPTION << "Not implemented";
+    }
+
+    InferenceEngine::ExecutableNetwork ImportNetwork(std::istream& networkModel,
+                                                     const std::map<std::string, std::string>& config) override {
+        THROW_GNA_EXCEPTION << "Not implemented";
+    }
+
+    InferenceEngine::IExecutableNetwork::Ptr ImportNetwork(std::istream& networkModel);
+
+    InferenceEngine::IExecutableNetwork::Ptr ImportNetwork(int fd);
+
     InferenceEngine::ExecutableNetwork ImportNetworkImpl(std::istream& networkModel,
                                         const std::map<std::string, std::string> &config) override {
         THROW_GNA_EXCEPTION << "Not implemented";
     }
-    using IInferencePluginInternal::ImportNetwork;
-
-    InferenceEngine::IExecutableNetwork::Ptr ImportNetwork(const std::string &modelFileName);
 
     /**
      * utility to provide input and output blobs externally to be used by InferenceEngine request API clients
