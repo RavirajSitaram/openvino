@@ -255,12 +255,15 @@ void GNAModelSerial::Import(void *basePointer,
         }
         auto memLayerName = std::string(inName.begin(), inName.end());
 
+        float scaleFactor = 0;
+        readNBits<64>(scaleFactor, is);
+
         void *pSegment;
         readOffset(pSegment, basePointer, is);
         uint32_t segmentSz;
         readBits(segmentSz, is);
         if (pstates) {
-            (*pstates).emplace(memLayerName, std::make_pair(pSegment, segmentSz));
+            (*pstates).emplace_back(memLayerName, pSegment, segmentSz, scaleFactor);
         }
     }
 
@@ -391,11 +394,12 @@ void GNAModelSerial::Export(void * basePointer, size_t gnaGraphSize, std::ostrea
     writeBits(static_cast<uint32_t>(states.size()), os);
     for (auto && state : states) {
         // State name
-        writeBits(state.first.size(), os);
-        writeNBytes(state.first.c_str(), state.first.size(), os);
+        writeBits(state.layerName.size(), os);
+        writeNBytes(state.layerName.c_str(), state.layerName.size(), os);
+        writeBits(state.scaleFactor, os);
 
-        writeBits(offsetFromBase(state.second.first), os);
-        writeBits(state.second.second, os);
+        writeBits(offsetFromBase(state.ptr), os);
+        writeBits(state.shape, os);
     }
 
     // once structure has been written lets push gna graph
@@ -511,12 +515,15 @@ void GNAModelSerial::Import(void *basePointer,
         }
         auto memLayerName = std::string(inName.begin(), inName.end());
 
+        float scaleFactor = 1.0;
+        readNBits<64>(scaleFactor, is);
+
         void *pSegment;
         readOffset(pSegment, basePointer, is);
         uint32_t segmentSz;
         readBits(segmentSz, is);
         if (pstates) {
-            (*pstates).emplace(memLayerName, std::make_pair(pSegment, segmentSz));
+            (*pstates).emplace_back(memLayerName, pSegment, segmentSz, scaleFactor);
         }
     }
 

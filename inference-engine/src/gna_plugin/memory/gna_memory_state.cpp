@@ -73,7 +73,7 @@ namespace memory {
         case InferenceEngine::Precision::I16: {
             if (new_state_precision == InferenceEngine::Precision::FP32) {
                 auto quantized = InferenceEngine::getInjectedData<QuantizedLayerParams>(state->getInput());
-                auto scale_factor = quantized != nullptr ? quantized->_dst_quant.scale : 1.0f;
+                auto scale_factor = quantized != nullptr ? quantized->_dst_quant.scale : state->scale_factor;
 
                 if ((name =="0") || (name == "2") || (name == "4") || (name == "6") || (name == "8") || (name == "10"))
                     scale_factor = 512;
