@@ -62,6 +62,38 @@ inline void readOffset(T & ptr, void *base,  std::istream & is) {
     ptr = reinterpret_cast<T>(offsetToPointer(base, offset));
 }
 
+inline void writeNBytes(const void *ptr, uint32_t size, int fd) {
+    auto ret = write(fd, static_cast<const char*>(ptr), size);
+}
+
+template <class T>
+inline void writeBits(const T & obj, int fd) {
+    auto ret= write(fd, reinterpret_cast<const char *>(&obj), sizeof(T));
+}
+
+template <class T>
+inline void readBits(T & obj, int fd) {
+    auto ret= read(fd, reinterpret_cast<char *>(&obj), sizeof(T));
+}
+
+inline void readNBytes(void * ptr, uint32_t size, int fd) {
+    auto ret= read(fd, reinterpret_cast<char *>(ptr), size);
+}
+
+template <int nBits, class T>
+inline void readNBits(T & obj, int fd) {
+    std::array<uint8_t, nBits / 8> tmp;
+    auto ret= read(fd, reinterpret_cast<char *>(&tmp), nBits / 8);
+    obj = * reinterpret_cast<T*>(&tmp.front());
+}
+
+template <class T>
+inline void readOffset(T & ptr, void *base,  int fd) {
+    uint64_t offset = 0ull;
+    readBits(offset, fd);
+    ptr = reinterpret_cast<T>(offsetToPointer(base, offset));
+}
+
 union {
     uint16_t s;
     uint8_t  c[2];
@@ -127,7 +159,63 @@ GNAPluginNS::HeaderLatest::ModelHeader GNAModelSerial::ReadHeader(std::istream &
     if (header.headerSize > sizeof(header)) {
         is.seekg(header.headerSize - sizeof(header), std::ios_base::cur);
     }
-	return header;
+    return header;
+}
+
+GNAPluginNS::HeaderLatest::ModelHeader GNAModelSerial::ReadHeader(int fd) {
+    auto stream_len = lseek(fd, 0, SEEK_END);
+    if (stream_len == -1) {
+        THROW_GNA_EXCEPTION << "Can't open file to import";
+    }
+    lseek(fd, 0, SEEK_SET);
+
+    HeaderLatest::ModelHeader header;
+    header.version.major = 0u;
+    header.version.minor = 0u;
+    auto size_of_headers_header = sizeof(HeaderLatest::ModelHeader::gnam) + sizeof(HeaderLatest::ModelHeader::headerSize)
+                                + sizeof(HeaderLatest::ModelHeader::Version);
+    if (stream_len > size_of_headers_header) {
+        readNBytes(&header, size_of_headers_header, fd);
+    } else {
+        readNBytes(&header, stream_len, fd);
+    }
+    if (*reinterpret_cast<int*>(header.gnam) != gna_header_magic) {
+        THROW_GNA_EXCEPTION << "Imported file unsupported: magic number should be GNAM(0x474e414d), but was 0x"
+                           << std::setfill('0') <<
+                           std::hex << std::setw(2) << static_cast<short>(header.gnam[0]) <<
+                           std::hex << std::setw(2) << static_cast<short>(header.gnam[1]) <<
+                           std::hex << std::setw(2) << static_cast<short>(header.gnam[2]) <<
+                           std::hex << std::setw(2) << static_cast<short>(header.gnam[3]);
+    }
+    lseek(fd, 0, SEEK_SET);
+    Header2dot1::ModelHeader tempHeader2dot1;
+    switch (header.version.major) {
+        case 2:
+            switch (header.version.minor) {
+                case 1:
+                    readBits(tempHeader2dot1, fd);
+                    header = Header2dot2::ModelHeader(tempHeader2dot1);
+                    break;
+                case 2:
+                    readBits(header, fd);
+                    break;
+                default:
+                    THROW_GNA_EXCEPTION << "Imported file unsupported. minor version should be equal to 1 or 2 and is: " << header.version.minor;
+    }
+            break;
+        default:
+            THROW_GNA_EXCEPTION << "Imported file unsupported. Import for files with major version equal to: " << header.version.major << " is not implemented";
+    }
+    /*
+     * extra data need to be added into new header and modify check as appropriate
+     */
+
+    //  forward compatible
+    if (header.headerSize > sizeof(header)) {
+        lseek(fd, header.headerSize - sizeof(header), SEEK_CUR);
+    }
+
+    return header;
 }
 
 #define offsetFromBase(field)\
@@ -272,6 +360,126 @@ void GNAModelSerial::Import(void *basePointer,
     is.read(reinterpret_cast<char*>(basePointer), gnaGraphSize);
 }
 
+void GNAModelSerial::Import(void *basePointer,
+        size_t gnaGraphSize,
+        int fd,
+        std::shared_ptr<GNAPluginNS::InputDesc> inputsDesc,
+        std::vector<GNAPluginNS::OutputDesc> &desc,
+        InferenceEngine::InputsDataMap& inputsDataMap,
+        InferenceEngine::OutputsDataMap& outputsDataMap) {
+    for (auto inputIndex = 0; inputIndex < modelHeader.nInputs; inputIndex++) {
+        uint32_t nameSize = 0;
+        readNBits<64>(nameSize, fd);
+        std::vector<char> inName;
+        for (uint32_t i = 0; i < nameSize; i++) {
+            char next_char;
+            readBits(next_char, fd);
+            inName.push_back(next_char);
+        }
+        inputNames.emplace_back(std::string(inName.begin(), inName.end()));
+    }
+    ImportInputs(fd, basePointer, inputsDesc, inputsDataMap);
+    for (auto inputIndex = 0; inputIndex < modelHeader.nOutputs; inputIndex++) {
+        uint32_t nameSize = 0;
+        readNBits<64>(nameSize, fd);
+        std::vector<char> outName;
+        for (uint32_t i = 0; i < nameSize; i++) {
+            char next_char;
+            readBits(next_char, fd);
+            outName.push_back(next_char);
+        }
+        outputNames.emplace_back(outName.begin(), outName.end());
+    }
+    ImportOutputs(fd, basePointer, desc, outputsDataMap);
+
+    for (auto operation = gna2Model->Operations; operation != gna2Model->Operations + gna2Model->NumberOfOperations; ++operation) {
+        readNBits<32>(operation->Type, fd);
+        readBits(operation->NumberOfOperands, fd);
+        operation->Operands = static_cast<Gna2Tensor const **>(gnaUserAllocator(sizeof(Gna2Tensor*) * operation->NumberOfOperands));
+        IE_ASSERT(operation->Operands != nullptr);
+        for (uint32_t i = 0; i < operation->NumberOfOperands; i++) {
+            Gna2Tensor t{};
+            readBits(t, fd);
+            if (IsEmptyTensor(t)) {
+                operation->Operands[i] = nullptr;
+            } else {
+                operation->Operands[i] = static_cast<Gna2Tensor const *>(gnaUserAllocator(sizeof(Gna2Tensor)));
+                t.Data = offsetToPointer(basePointer, reinterpret_cast<uint64_t>(t.Data));
+                const_cast<Gna2Tensor&>(*operation->Operands[i]) = t;
+            }
+        }
+        readBits(operation->NumberOfParameters, fd);
+        switch (operation->Type) {
+        case Gna2OperationTypeElementWiseAffine:
+        case Gna2OperationTypeFullyConnectedAffine:
+        case Gna2OperationTypeConvolution:
+            break;
+        case Gna2OperationTypeRecurrent:
+            THROW_GNA_EXCEPTION << "Importing of recurrent operation not supported";
+        case Gna2OperationTypeTransposition:
+            THROW_GNA_EXCEPTION << "Importing of transposition operation not supported";
+        case Gna2OperationTypeCopy:
+            THROW_GNA_EXCEPTION << "Importing of copy operation not supported";
+        default:
+            THROW_GNA_EXCEPTION << "Importing of unknown GNA operation type(" << operation->Type << ")  not supported";
+        }
+        if (operation->NumberOfParameters > 0)
+            operation->Parameters = static_cast<void **>(gnaUserAllocator(sizeof(void*) * operation->NumberOfParameters));
+        else
+            operation->Parameters = nullptr;
+        for (uint32_t i = 0; i < operation->NumberOfParameters; i++) {
+            uint32_t paramSize = 0;
+            readBits(paramSize, fd);
+            IE_ASSERT(operation->Parameters != nullptr);
+            if (paramSize == 0) {
+                IE_ASSERT(operation->Parameters != nullptr);
+                operation->Parameters[i] = nullptr;
+                continue;
+            }
+            operation->Parameters[i] = gnaUserAllocator(paramSize);
+            readNBytes(operation->Parameters[i], paramSize, fd);
+
+            if (GnaParamSize.at(operation->Type).size() <= i) {
+                THROW_GNA_EXCEPTION << "Cannot import parameter of index: " << i;
+            }
+            if (paramSize != GnaParamSize.at(operation->Type).at(i)) {
+                THROW_GNA_EXCEPTION << "Parameter size mismatch on import: " << i;
+            }
+        }
+    }
+
+    // writing memory information
+    uint32_t nStates = 0;
+    readBits(nStates, fd);
+
+    for (int i = 0; i != nStates; i++) {
+         //Read the name back
+        uint32_t nameSize = 0;
+        readNBits<64>(nameSize, fd);
+        std::vector<char> inName;
+        for (uint32_t i = 0; i < nameSize; i++) {
+            char next_char;
+            readBits(next_char, fd);
+            inName.push_back(next_char);
+        }
+        auto memLayerName = std::string(inName.begin(), inName.end());
+
+        float scaleFactor = 0;
+        readBits(scaleFactor, fd);
+
+        void *pSegment;
+        readOffset(pSegment, basePointer, fd);
+        uint32_t segmentSz;
+        readBits(segmentSz, fd);
+        if (pstates) {
+            (*pstates).emplace_back(memLayerName, pSegment, segmentSz, scaleFactor);
+        }
+    }
+
+
+    // once structure has been read lets read whole gna graph
+    read(fd, reinterpret_cast<char*>(basePointer), gnaGraphSize);
+}
 
 uint32_t guessGrouping(Gna2Model const& model) {
     if (model.NumberOfOperations == 0 ||
@@ -390,6 +598,7 @@ void GNAModelSerial::Export(void * basePointer, size_t gnaGraphSize, std::ostrea
             writeNBytes(layer.Parameters[i], paramSize, os);
         }
     }
+
     // writing memory information
     writeBits(static_cast<uint32_t>(states.size()), os);
     for (auto && state : states) {
@@ -404,6 +613,124 @@ void GNAModelSerial::Export(void * basePointer, size_t gnaGraphSize, std::ostrea
 
     // once structure has been written lets push gna graph
     os.write(reinterpret_cast<char*>(basePointer), gnaGraphSize);
+}
+
+void GNAModelSerial::Export(void * basePointer, size_t gnaGraphSize, int fd) const {
+    const std::vector<Gna2Operation>
+        layers(gna2Model->Operations, gna2Model->Operations + gna2Model->NumberOfOperations);
+
+    // all offsets will be from this pointer
+    auto getOffsetFromBase = [basePointer, &gnaGraphSize](void * pointer, const char * name = nullptr) {
+        auto offset = static_cast<uint64_t>(std::distance(reinterpret_cast<uint8_t*>(basePointer), reinterpret_cast<uint8_t*>(pointer)));
+        if (offset > gnaGraphSize) {
+            THROW_GNA_EXCEPTION << "offset to " << (name == nullptr ? "" : name) << "(0x" << pointer
+                << ") not in range segment retuned from GNAAlloc(0x" << basePointer << "-0x"
+                << reinterpret_cast<void*>(reinterpret_cast<uint8_t*>(basePointer) + gnaGraphSize) << ")";
+        }
+        return offset;
+    };
+
+    auto getTensorWithProperOffset = [&getOffsetFromBase](const Gna2Tensor& tensor) {
+        Gna2Tensor out = tensor;
+        out.Data = reinterpret_cast<void*>(getOffsetFromBase(tensor.Data));
+        return out;
+    };
+
+    auto convert_to_serial = [getOffsetFromBase](const HeaderLatest::RuntimeEndPoint& ep) {
+        HeaderLatest::RuntimeEndPoint out;
+        out.elements_count = ep.elements_count;
+        out.descriptor_offset = offsetFromBase(ep.descriptor_ptr);
+        out.scaleFactor = ep.scaleFactor;
+        out.element_size = ep.element_size;
+        out.orientation = ep.orientation;
+        return out;
+    };
+    /**
+     * writing header
+     */
+    HeaderLatest::ModelHeader header;
+    header.gnam[0] = 'G';
+    header.gnam[1] = 'N';
+    header.gnam[2] = 'A';
+    header.gnam[3] = 'M';
+    header.headerSize = sizeof(HeaderLatest::ModelHeader);
+    header.gnaMemSize = gnaGraphSize;
+    header.layersCount = layers.size();
+    header.nGroup = guessGrouping(*gna2Model);
+    header.nInputs = inputs.size();
+    header.nOutputs = outputs.size();
+
+    header.nRotateRows = nRotateRows;
+    header.nRotateColumns = nRotateColumns;
+    header.doRotateInput = doRotateInput;
+
+    writeBits(header, fd);
+
+    for (auto &name : inputNames) {
+        writeBits(name.size(), fd);
+        writeNBytes(name.c_str(), name.size(), fd);
+    }
+    for (const auto &input : inputs) {
+        writeBits(convert_to_serial(input), fd);
+    }
+    for (auto &name : outputNames) {
+        writeBits(name.size(), fd);
+        writeNBytes(name.c_str(), name.size(), fd);
+    }
+    for (const auto &output : outputs) {
+        writeBits(convert_to_serial(output), fd);
+    }
+    for (const auto & layer : layers) {
+        writeBits(static_cast<uint32_t>(layer.Type), fd);
+        writeBits(layer.NumberOfOperands, fd);
+
+        for (uint32_t i = 0; i < layer.NumberOfOperands; i++) {
+            if (layer.Operands[i] == nullptr)
+                writeBits(Gna2Tensor{}, fd);
+            else
+                writeBits(getTensorWithProperOffset(*layer.Operands[i]), fd);
+        }
+
+        writeBits(layer.NumberOfParameters, fd);
+
+        // writing parameters
+        switch (layer.Type) {
+        case Gna2OperationTypeElementWiseAffine:
+        case Gna2OperationTypeFullyConnectedAffine:
+        case Gna2OperationTypeConvolution:
+            break;
+        case Gna2OperationTypeRecurrent:
+            THROW_GNA_EXCEPTION << "Exporting of recurrent operation not supported";
+        case Gna2OperationTypeTransposition:
+            THROW_GNA_EXCEPTION << "Exporting of interleave operation not supported";
+        case Gna2OperationTypeCopy:
+            THROW_GNA_EXCEPTION << "Exporting of copy operation not supported";
+        default:
+            THROW_GNA_EXCEPTION << "Exporting of unknown GNA operation type(" << layer.Type << ")  not supported";
+        }
+        for (uint32_t i = 0; i < layer.NumberOfParameters; i++) {
+            if (layer.Parameters[i] == nullptr) {
+                writeBits(static_cast<uint32_t>(0), fd);
+                continue;
+            }
+            const auto paramSize = GnaParamSize.at(layer.Type).at(i);
+            writeBits(paramSize, fd);
+            writeNBytes(layer.Parameters[i], paramSize, fd);
+        }
+    }
+    // writing memory information
+    writeBits(static_cast<uint32_t>(states.size()), fd);
+    for (auto && state : states) {
+        // State name
+        writeBits(state.layerName.size(), fd);
+        writeNBytes(state.layerName.c_str(), state.layerName.size(), fd);
+        writeBits(state.scaleFactor, fd);
+        writeBits(offsetFromBase(state.ptr), fd);
+        writeBits(state.shape, fd);
+    }
+
+    // once structure has been written lets push gna graph
+    write(fd, reinterpret_cast<char*>(basePointer), gnaGraphSize);
 }
 #else
 
@@ -516,7 +843,7 @@ void GNAModelSerial::Import(void *basePointer,
         auto memLayerName = std::string(inName.begin(), inName.end());
 
         float scaleFactor = 1.0;
-        readNBits<64>(scaleFactor, is);
+        readBits(scaleFactor, is);
 
         void *pSegment;
         readOffset(pSegment, basePointer, is);
@@ -526,7 +853,6 @@ void GNAModelSerial::Import(void *basePointer,
             (*pstates).emplace_back(memLayerName, pSegment, segmentSz, scaleFactor);
         }
     }
-
 
     // once structure has been read lets read whole gna graph
     is.read(reinterpret_cast<char*>(basePointer), gnaGraphSize);
@@ -657,14 +983,17 @@ void GNAModelSerial::Export(void * basePointer, size_t gnaGraphSize, std::ostrea
         writeBits(offsetFromBase(layer.pOutputsIntermediate), os);
         writeBits(offsetFromBase(layer.pOutputs), os);
     }
+
     // writing memory information
     writeBits(static_cast<uint32_t>(states.size()), os);
     for (auto && state : states) {
-        writeBits(state.first.size(), os);
-        writeNBytes(state.first.c_str(), state.first.size(), os);
+        // State name
+        writeBits(state.layerName.size(), os);
+        writeNBytes(state.layerName.c_str(), state.layerName.size(), os);
+        writeBits(state.scaleFactor, os);
 
-        writeBits(offsetFromBase(state.second.first), os);
-        writeBits(state.second.second, os);
+        writeBits(offsetFromBase(state.ptr), os);
+        writeBits(state.shape, os);
     }
 
     // once structure has been written lets push gna graph

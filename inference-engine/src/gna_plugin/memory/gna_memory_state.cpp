@@ -64,7 +64,6 @@ namespace memory {
         }
 
         if (new_state_precision == state_precision) {
-            std::cout << ">> Same precision.. Doing mem copy" << std::endl;
             std::memcpy(state->gna_ptr, data_ptr, data_size);
             return;
         }
@@ -75,19 +74,11 @@ namespace memory {
                 auto quantized = InferenceEngine::getInjectedData<QuantizedLayerParams>(state->getInput());
                 auto scale_factor = quantized != nullptr ? quantized->_dst_quant.scale : state->scale_factor;
 
-                if ((name =="0") || (name == "2") || (name == "4") || (name == "6") || (name == "8") || (name == "10"))
-                    scale_factor = 512;
-                else
-                    scale_factor = 2048;
-
-
                 GNAPluginNS::ConvertToInt16(static_cast<int16_t*>(state->gna_ptr),
                     newState->buffer().as<float*>(),
                     1,
                     data_elements,
                     scale_factor);
-
-                std::cout << ">> Converting to FP32. scale factor" << scale_factor << std::endl;
             } else {
                 THROW_GNA_EXCEPTION << "Failed to SetState for MemoryState " << name
                     << ". If old state precision is I16 only I16 and FP32 are allowed as new state precisions."
