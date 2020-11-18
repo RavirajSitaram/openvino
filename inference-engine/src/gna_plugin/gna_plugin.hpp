@@ -138,6 +138,7 @@ void createRequestConfigsForGnaModels();
 
     void Export(const std::string &fileName);
 
+    void Export(int fd);
 
     InferenceEngine::IExecutableNetwork::Ptr ImportNetwork(const std::string &modelFileName,
                                         const std::map<std::string, std::string> &config) override {

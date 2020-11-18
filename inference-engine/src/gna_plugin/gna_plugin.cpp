@@ -388,7 +388,7 @@ void GNAPlugin::LoadNetwork(ICNNNetwork &network) {
         switch (gnaPrecision) {
             case Precision::I16: {
                 ModelQuantizer<QuantI16> q16;
-		        newNet = q16.quantize(network, run_passes, inputsDesc->inputScaleFactors);
+                newNet = q16.quantize(network, run_passes, inputsDesc->inputScaleFactors);
             }
             break;
             case Precision::I8:{
@@ -1136,7 +1136,76 @@ InferenceEngine::IExecutableNetwork::Ptr GNAPlugin::ImportNetwork(std::istream& 
         memoryLayer.gna_ptr = memory.ptr;
         memoryLayer.reserved_size = memory.shape;
         memoryLayer.scale_factor = memory.scaleFactor;
+        graphCompiler.memory_connection.emplace_back(make_pair(memory.layerName, memoryLayer));
+    }
 
+    DumpXNNToFile();
+
+#ifdef PLOT
+    dnn->WriteGraphWizModel("gna-blob-imported.dot");
+#endif
+#if GNA_LIB_VER == 2
+    createRequestConfigsForGnaModels();
+#endif
+    return nullptr;
+}
+
+InferenceEngine::IExecutableNetwork::Ptr GNAPlugin::ImportNetwork(int fd) {
+    auto header = GNAModelSerial::ReadHeader(fd);
+
+    InitGNADevice();
+
+    graphCompiler.setGNAMemoryPtr(gnamem);
+    void *basePtr = nullptr;
+    gnamem->reserve_ptr(&basePtr, header.gnaMemSize);
+    gnamem->commit();
+#if GNA_LIB_VER == 2
+    gnaModels.push_back(std::make_tuple(make_shared<CPPWrapper<Gna2Model>>(header.layersCount)));
+#else
+    nnets.emplace_back(make_shared<CPPWrapper<intel_nnet_type_t>>(header.layersCount), -1, InferenceEngine::BlobMap());
+    std::get<0>(nnets.back())->obj.nGroup = header.nGroup;
+#endif
+    GNAModelSerial::MemoryType  mt;
+#if GNA_LIB_VER == 2
+    auto serial = GNAModelSerial(&std::get<0>(gnaModels.back())->obj, mt);
+#else
+    auto serial = GNAModelSerial(&std::get<0>(nnets.back())->obj, mt);
+#endif
+
+    serial.setHeader(header);
+    serial.Import(basePtr,
+            header.gnaMemSize,
+            fd,
+            inputsDesc,
+            outputsDesc,
+            inputsDataMap,
+            outputsDataMap);
+
+#if GNA_LIB_VER == 2
+    auto getOrientation = [](Gna2Operation & gnaOperation) {
+        return gnaOperation.Type == Gna2OperationTypeConvolution ?
+            kDnnNonInterleavedOrientation : kDnnInterleavedOrientation;
+    };
+#else
+    auto getOrientation = [](intel_nnet_layer_t & layer) {
+        return layer.nLayerKind == INTEL_CONVOLUTIONAL ?
+           kDnnNonInterleavedOrientation : kDnnInterleavedOrientation;
+    };
+#endif
+
+#if GNA_LIB_VER == 1
+    inputsDesc->orientation_in["input"] = getOrientation(std::get<0>(nnets.back())->obj.pLayers[0]);
+    outputsDesc[0].orientation = getOrientation(std::get<0>(nnets.back())->obj.pLayers[std::get<0>(nnets.back())->obj.nLayers - 1]);
+#endif
+
+    num_rotate_rows = header.nRotateRows;
+    num_rotate_columns = header.nRotateColumns;
+
+    for (auto && memory : mt) {
+        GNAMemoryLayer memoryLayer(nullptr, nullptr, gnaFlags->sw_fp32 ? 4 : 2);
+        memoryLayer.gna_ptr = memory.ptr;
+        memoryLayer.reserved_size = memory.shape;
+        memoryLayer.scale_factor = memory.scaleFactor;
         graphCompiler.memory_connection.emplace_back(make_pair(memory.layerName, memoryLayer));
     }
 
@@ -1194,6 +1263,48 @@ void GNAPlugin::Export(const std::string &fileName) {
 
     std::fstream outStream(fileName, ios_base::out | ios_base::binary);
     serial.Export(gnamem->getBasePtr(), gnamem->getTotalBytes(), outStream);
+}
+
+void GNAPlugin::Export(int fd) {
+    if (inputsDesc->ptr_inputs_global_id.empty() || outputsDesc.empty()) {
+        THROW_GNA_EXCEPTION << " network not loaded";
+    }
+
+#if GNA_LIB_VER == 1
+    if (inputsDesc->ptr_inputs_global_id.size() != 1) {
+        THROW_GNA_EXCEPTION << " exporting network with multiple inputs not supported";
+    }
+#endif
+
+    // TODO: nnet group parameter looks only used in application - so can we move this line into load network.
+    IE_ASSERT(!inputsDataMap.empty());
+    auto inputDims = inputsDataMap.begin()->second->getTensorDesc().getDims();
+    if (inputDims.size() == 2) {
+#if GNA_LIB_VER == 1
+        std::get<0>(nnets.front())->obj.nGroup = inputDims[0];
+#endif
+    }
+#if GNA_LIB_VER == 2
+    Gna2Model* modelToSerial = &std::get<0>(gnaModels.front())->obj;
+#else
+    intel_nnet_type_t* modelToSerial = &std::get<0>(nnets.front())->obj;
+#endif
+    auto serial = GNAModelSerial(modelToSerial,
+                                 inputsDesc,
+                                 outputsDesc,
+                                 inputsDataMap,
+                                 outputsDataMap)
+                    .SetInputRotation(dnn->num_rotate_rows, dnn->num_rotate_columns, dnn->do_rotate_input);
+
+    for (auto && memoryConnection : graphCompiler.memory_connection) {
+        auto quantized = InferenceEngine::getInjectedData<QuantizedLayerParams>(memoryConnection.second.getInput());
+        auto scaleFactor = quantized != nullptr ? quantized->_dst_quant.scale : 1.0f;
+
+        serial.AddState(memoryConnection.first, memoryConnection.second.gna_ptr,
+                        memoryConnection.second.reserved_size, scaleFactor);
+    }
+
+    serial.Export(gnamem->getBasePtr(), gnamem->getTotalBytes(), fd);
 }
 
 void GNAPlugin::GetPerformanceCounts(std::map<std::string, InferenceEngine::InferenceEngineProfileInfo> &perfMap) {

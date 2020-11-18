@@ -200,6 +200,16 @@ private:
                 size_t gnaGraphSize,
                 std::ostream &os) const;
 
+    /**
+     * save gna graph to file descriptor
+     * @param ptr_nnet
+     * @param basePtr
+     * @param gnaGraphSize
+     * @param fd
+     */
+    void Export(void *basePtr,
+                size_t gnaGraphSize,
+                int fd) const;
 
     static std::vector<GNAPluginNS::HeaderLatest::RuntimeEndPoint> serializeOutputs(const InferenceEngine::OutputsDataMap& outputsDataMap,
             const std::vector<GNAPluginNS::OutputDesc>& outputsDesc);

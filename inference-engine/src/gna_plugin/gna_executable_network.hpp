@@ -16,17 +16,26 @@
 
 namespace GNAPluginNS {
 
+#define NNCACHE_PREFIX "NNCACHE"
+
 class GNAExecutableNetwork : public InferenceEngine::ExecutableNetworkThreadSafeAsyncOnly {
     std::shared_ptr<GNAPlugin> plg;
 
  public:
     GNAExecutableNetwork(const std::string &aotFileName, const std::map<std::string, std::string> &config) :
         plg(std::make_shared<GNAPlugin>(config)) {
-        std::fstream inputStream(aotFileName, std::ios_base::in | std::ios_base::binary);
-        if (inputStream.fail()) {
-            THROW_GNA_EXCEPTION << "Cannot open file to import model: " << aotFileName;
+        if (aotFileName.compare(0, strlen(NNCACHE_PREFIX), NNCACHE_PREFIX) == 0) {
+            auto postfix = aotFileName.substr(strlen(NNCACHE_PREFIX));
+            auto fd = std::stoi(postfix);
+            plg->ImportNetwork(fd);
+        } else {
+            std::fstream inputStream(aotFileName, std::ios_base::in | std::ios_base::binary);
+            if (inputStream.fail()) {
+                THROW_GNA_EXCEPTION << "Cannot open file to import model: " << aotFileName;
+            }
+            plg->ImportNetwork(inputStream);
         }
-        plg->ImportNetwork(inputStream);
+
         _networkInputs  = plg->GetInputs();
         _networkOutputs = plg->GetOutputs();
     }
@@ -51,7 +60,13 @@ class GNAExecutableNetwork : public InferenceEngine::ExecutableNetworkThreadSafe
     }
 
     void Export(const std::string &modelFileName) override {
-        plg->Export(modelFileName);
+        if (modelFileName.compare(0, strlen(NNCACHE_PREFIX), NNCACHE_PREFIX) == 0) {
+            auto postfix = modelFileName.substr(strlen(NNCACHE_PREFIX));
+            auto fd = std::stoi(postfix);
+            plg->Export(fd);
+        } else {
+            plg->Export(modelFileName);
+        }
     }
 
     using ExecutableNetworkInternal::Export;
