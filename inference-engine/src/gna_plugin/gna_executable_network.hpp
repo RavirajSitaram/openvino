@@ -22,7 +22,11 @@ class GNAExecutableNetwork : public InferenceEngine::ExecutableNetworkThreadSafe
  public:
     GNAExecutableNetwork(const std::string &aotFileName, const std::map<std::string, std::string> &config) :
         plg(std::make_shared<GNAPlugin>(config)) {
-        plg->ImportNetwork(aotFileName);
+        std::fstream inputStream(aotFileName, std::ios_base::in | std::ios_base::binary);
+        if (inputStream.fail()) {
+            THROW_GNA_EXCEPTION << "Cannot open file to import model: " << aotFileName;
+        }
+        plg->ImportNetwork(inputStream);
         _networkInputs  = plg->GetInputs();
         _networkOutputs = plg->GetOutputs();
     }
