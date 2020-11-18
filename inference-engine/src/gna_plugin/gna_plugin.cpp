@@ -1133,10 +1133,11 @@ InferenceEngine::IExecutableNetwork::Ptr GNAPlugin::ImportNetwork(std::istream& 
 
     for (auto && memory : mt) {
         GNAMemoryLayer memoryLayer(nullptr, nullptr, gnaFlags->sw_fp32 ? 4 : 2);
-        memoryLayer.gna_ptr = memory.second.first;
-        memoryLayer.reserved_size = memory.second.second;
+        memoryLayer.gna_ptr = memory.ptr;
+        memoryLayer.reserved_size = memory.shape;
+        memoryLayer.scale_factor = memory.scaleFactor;
 
-        graphCompiler.memory_connection.emplace_back(make_pair(memory.first, memoryLayer));
+        graphCompiler.memory_connection.emplace_back(make_pair(memory.layerName, memoryLayer));
     }
 
     DumpXNNToFile();
@@ -1183,7 +1184,12 @@ void GNAPlugin::Export(const std::string &fileName) {
                     .SetInputRotation(dnn->num_rotate_rows, dnn->num_rotate_columns, dnn->do_rotate_input);
 
     for (auto && memoryConnection : graphCompiler.memory_connection) {
-        serial.AddState(memoryConnection.first, memoryConnection.second.gna_ptr, memoryConnection.second.reserved_size);
+        auto quantized = InferenceEngine::getInjectedData<QuantizedLayerParams>(memoryConnection.second.getInput());
+        auto scale_factor = quantized != nullptr ? quantized->_dst_quant.scale : 1.0f;
+
+        serial.AddState(memoryConnection.first, memoryConnection.second.gna_ptr,
+                        memoryConnection.second.reserved_size,
+                        scale_factor);
     }
 
     std::fstream outStream(fileName, ios_base::out | ios_base::binary);

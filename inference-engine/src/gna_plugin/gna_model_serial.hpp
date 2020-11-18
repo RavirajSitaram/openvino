@@ -20,7 +20,17 @@
  */
 class GNAModelSerial {
  public:
-    using MemoryType = std::map<std::string, std::pair<void*, uint32_t>>;
+    struct MemoryStateInfo {
+        std::string layerName;
+        void* ptr;
+        uint32_t shape;
+        float scaleFactor;
+
+        MemoryStateInfo (std::string name, void* p,
+                            uint32_t shape, float sf):layerName(name),
+                            ptr(p), shape(shape), scaleFactor(sf) {}
+    };
+    using MemoryType = std::vector<MemoryStateInfo>;
 
 private:
 #if GNA_LIB_VER == 2
@@ -130,8 +140,8 @@ private:
      * @param size
      * @return
      */
-    GNAModelSerial & AddState(std::string& name, void* descriptor_ptr, size_t size) {
-        states.emplace(name, std::make_pair(descriptor_ptr, size));
+    GNAModelSerial & AddState(std::string& name, void* descriptor_ptr, size_t size, float sf) {
+        states.emplace_back(name, descriptor_ptr, size, sf);
         return *this;
     }
 
