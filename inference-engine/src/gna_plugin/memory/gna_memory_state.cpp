@@ -71,7 +71,10 @@ namespace memory {
         switch (state_precision) {
         case InferenceEngine::Precision::I16: {
             if (new_state_precision == InferenceEngine::Precision::FP32) {
-                auto quantized = InferenceEngine::getInjectedData<QuantizedLayerParams>(state->getInput());
+                QuantizedLayerParams* quantized = nullptr;
+                if (state->getInput()) {
+                    quantized = InferenceEngine::getInjectedData<QuantizedLayerParams>(state->getInput());
+                }
                 auto scale_factor = quantized != nullptr ? quantized->_dst_quant.scale : state->scale_factor;
 
                 GNAPluginNS::ConvertToInt16(static_cast<int16_t*>(state->gna_ptr),

@@ -240,6 +240,8 @@ const std::map<Gna2OperationType, std::vector<uint32_t>> GnaParamSize{
         sizeof(Gna2Shape),
         sizeof(Gna2Shape),
         sizeof(Gna2Shape)}},
+    {Gna2OperationTypeCopy, {sizeof(Gna2Shape)}},
+    {Gna2OperationTypeTransposition, {sizeof(Gna2Shape)}},
 };
 
 void GNAModelSerial::Import(void *basePointer,
@@ -292,13 +294,11 @@ void GNAModelSerial::Import(void *basePointer,
         case Gna2OperationTypeElementWiseAffine:
         case Gna2OperationTypeFullyConnectedAffine:
         case Gna2OperationTypeConvolution:
+        case Gna2OperationTypeCopy:
+        case Gna2OperationTypeTransposition:
             break;
         case Gna2OperationTypeRecurrent:
             THROW_GNA_EXCEPTION << "Importing of recurrent operation not supported";
-        case Gna2OperationTypeTransposition:
-            THROW_GNA_EXCEPTION << "Importing of transposition operation not supported";
-        case Gna2OperationTypeCopy:
-            THROW_GNA_EXCEPTION << "Importing of copy operation not supported";
         default:
             THROW_GNA_EXCEPTION << "Importing of unknown GNA operation type(" << operation->Type << ")  not supported";
         }
@@ -409,20 +409,20 @@ void GNAModelSerial::Import(void *basePointer,
             }
         }
         readBits(operation->NumberOfParameters, fd);
+
         switch (operation->Type) {
         case Gna2OperationTypeElementWiseAffine:
         case Gna2OperationTypeFullyConnectedAffine:
         case Gna2OperationTypeConvolution:
+        case Gna2OperationTypeCopy:
+        case Gna2OperationTypeTransposition:
             break;
         case Gna2OperationTypeRecurrent:
             THROW_GNA_EXCEPTION << "Importing of recurrent operation not supported";
-        case Gna2OperationTypeTransposition:
-            THROW_GNA_EXCEPTION << "Importing of transposition operation not supported";
-        case Gna2OperationTypeCopy:
-            THROW_GNA_EXCEPTION << "Importing of copy operation not supported";
         default:
             THROW_GNA_EXCEPTION << "Importing of unknown GNA operation type(" << operation->Type << ")  not supported";
         }
+
         if (operation->NumberOfParameters > 0)
             operation->Parameters = static_cast<void **>(gnaUserAllocator(sizeof(void*) * operation->NumberOfParameters));
         else
@@ -539,7 +539,6 @@ void GNAModelSerial::Export(void * basePointer, size_t gnaGraphSize, std::ostrea
     header.nGroup = guessGrouping(*gna2Model);
     header.nInputs = inputs.size();
     header.nOutputs = outputs.size();
-
     header.nRotateRows = nRotateRows;
     header.nRotateColumns = nRotateColumns;
     header.doRotateInput = doRotateInput;
@@ -578,16 +577,15 @@ void GNAModelSerial::Export(void * basePointer, size_t gnaGraphSize, std::ostrea
         case Gna2OperationTypeElementWiseAffine:
         case Gna2OperationTypeFullyConnectedAffine:
         case Gna2OperationTypeConvolution:
+        case Gna2OperationTypeCopy:
+        case Gna2OperationTypeTransposition:
             break;
         case Gna2OperationTypeRecurrent:
             THROW_GNA_EXCEPTION << "Exporting of recurrent operation not supported";
-        case Gna2OperationTypeTransposition:
-            THROW_GNA_EXCEPTION << "Exporting of interleave operation not supported";
-        case Gna2OperationTypeCopy:
-            THROW_GNA_EXCEPTION << "Exporting of copy operation not supported";
         default:
             THROW_GNA_EXCEPTION << "Exporting of unknown GNA operation type(" << layer.Type << ")  not supported";
         }
+
         for (uint32_t i = 0; i < layer.NumberOfParameters; i++) {
             if (layer.Parameters[i] == nullptr) {
                 writeBits(static_cast<uint32_t>(0), os);
@@ -606,7 +604,6 @@ void GNAModelSerial::Export(void * basePointer, size_t gnaGraphSize, std::ostrea
         writeBits(state.layerName.size(), os);
         writeNBytes(state.layerName.c_str(), state.layerName.size(), os);
         writeBits(state.scaleFactor, os);
-
         writeBits(offsetFromBase(state.ptr), os);
         writeBits(state.shape, os);
     }
@@ -659,7 +656,6 @@ void GNAModelSerial::Export(void * basePointer, size_t gnaGraphSize, int fd) con
     header.nGroup = guessGrouping(*gna2Model);
     header.nInputs = inputs.size();
     header.nOutputs = outputs.size();
-
     header.nRotateRows = nRotateRows;
     header.nRotateColumns = nRotateColumns;
     header.doRotateInput = doRotateInput;
@@ -698,16 +694,15 @@ void GNAModelSerial::Export(void * basePointer, size_t gnaGraphSize, int fd) con
         case Gna2OperationTypeElementWiseAffine:
         case Gna2OperationTypeFullyConnectedAffine:
         case Gna2OperationTypeConvolution:
+        case Gna2OperationTypeCopy:
+        case Gna2OperationTypeTransposition:
             break;
         case Gna2OperationTypeRecurrent:
             THROW_GNA_EXCEPTION << "Exporting of recurrent operation not supported";
-        case Gna2OperationTypeTransposition:
-            THROW_GNA_EXCEPTION << "Exporting of interleave operation not supported";
-        case Gna2OperationTypeCopy:
-            THROW_GNA_EXCEPTION << "Exporting of copy operation not supported";
         default:
             THROW_GNA_EXCEPTION << "Exporting of unknown GNA operation type(" << layer.Type << ")  not supported";
         }
+
         for (uint32_t i = 0; i < layer.NumberOfParameters; i++) {
             if (layer.Parameters[i] == nullptr) {
                 writeBits(static_cast<uint32_t>(0), fd);
@@ -805,21 +800,35 @@ void GNAModelSerial::Import(void *basePointer,
             break;
         }
 
+        case INTEL_COPY: {
+            layer->pLayerStruct = _mm_malloc(sizeof(intel_copy_layer_t), 64);
+            if (layer->pLayerStruct == nullptr) {
+                THROW_GNA_EXCEPTION << "could not allocate memory for intel_copy_layer_t structure.";
+            }
+
+            auto &copy = *reinterpret_cast<intel_copy_layer_t *>(layer->pLayerStruct);
+            readBits(copy.nCopyRows, is);
+            readBits(copy.nCopyCols, is);
+            break;
+        }
+
         case INTEL_RECURRENT:
             THROW_GNA_EXCEPTION << "Importing of recurrent layer not supported";
         case INTEL_INTERLEAVE:
             THROW_GNA_EXCEPTION << "Importing of interleave layer not supported";
         case INTEL_DEINTERLEAVE:
             THROW_GNA_EXCEPTION << "Importing of deinterleave layer not supported";
-        case INTEL_COPY:
-            THROW_GNA_EXCEPTION << "Importing of copy layer not supported";
         default:
             THROW_GNA_EXCEPTION << "Importing of unknown GNA layer kind(" << layer->nLayerKind << ")  not supported";
         }
 
         // reading offsets of inputs/outputs
         readOffset(layer->pInputs, basePointer, is);
-        readOffset(layer->pOutputsIntermediate, basePointer, is);
+        if (layer->nLayerKind == INTEL_COPY) {
+            layer->pOutputsIntermediate = nullptr;
+        } else {
+            readOffset(layer->pOutputsIntermediate, basePointer, is);
+        }
         readOffset(layer->pOutputs, basePointer, is);
     }
 
@@ -966,6 +975,13 @@ void GNAModelSerial::Export(void * basePointer, size_t gnaGraphSize, std::ostrea
                 break;
             }
 
+            case INTEL_COPY: {
+                auto &copy = *reinterpret_cast<intel_copy_layer_t *>(layer.pLayerStruct);
+                writeBits(copy.nCopyRows, os);
+                writeBits(copy.nCopyCols, os);
+                break;
+            }
+
             case INTEL_RECURRENT:
                 THROW_GNA_EXCEPTION << "Exporting of recurrent layer not supported";
             case INTEL_INTERLEAVE:
@@ -980,7 +996,9 @@ void GNAModelSerial::Export(void * basePointer, size_t gnaGraphSize, std::ostrea
 
         // writing offsets from base.
         writeBits(offsetFromBase(layer.pInputs), os);
-        writeBits(offsetFromBase(layer.pOutputsIntermediate), os);
+        if (layer.nLayerKind != INTEL_COPY) {
+            writeBits(offsetFromBase(layer.pOutputsIntermediate), os);
+        }
         writeBits(offsetFromBase(layer.pOutputs), os);
     }
 
