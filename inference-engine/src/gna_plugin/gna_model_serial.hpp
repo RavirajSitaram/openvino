@@ -45,6 +45,7 @@ private:
     uint32_t nRotateRows = 0;
     uint32_t nRotateColumns = 0;
     bool doRotateInput = false;
+    bool doRotateOutput = false;
 
     MemoryType states, *pstates = nullptr;
     GNAPluginNS::HeaderLatest::ModelHeader modelHeader;
