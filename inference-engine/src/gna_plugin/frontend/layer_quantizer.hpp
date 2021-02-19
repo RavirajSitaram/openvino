@@ -133,7 +133,13 @@ class Quant<QuantI8> {
  public:
     template<class ...Args>
     void operator()(Args && ... args) const {
-        QuantizeAffine8(std::forward<Args>(args)...);
+#if __AVX2__
+    QuantizeAffine8_avx2(std::forward<Args>(args)...);
+#elif __SSE4_2__
+    QuantizeAffine8_sse(std::forward<Args>(args)...);       
+#else
+    QuantizeAffine8(std::forward<Args>(args)...);
+#endif
     }
 };
 
