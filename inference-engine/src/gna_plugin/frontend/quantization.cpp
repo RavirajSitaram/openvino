@@ -315,6 +315,26 @@ void QuantizeVector16(float *ptr_float_memory, int16_t *ptr_int_memory, uint32_t
     }
 }
 
+#include <fstream>
+#include <sys/stat.h>
+
+void createDirs(std::string path) {
+    char delim = '/';
+    int start = 0;
+
+    auto pos = path.find(delim);
+    while (pos != std::string::npos) {
+		auto dir = path.substr(start, pos - start+1);
+
+        struct stat sb;
+        if (!((stat(dir.c_str(), &sb) == 0) && (S_ISDIR(sb.st_mode)))) {
+            if (mkdir(dir.c_str(), 0777) != 0)
+                std::cout << "failed to create folder: " << dir << std::endl;
+		}
+		pos = path.find(delim, pos+1);
+	}
+}
+
 void QuantizeAffine8(float *ptr_float_weights, float *ptr_float_biases,
                      int8_t *ptr_int_weights, intel_compound_bias_t *ptr_int_biases,
                      float input_scale_factor, float *ptr_weight_scale_factor,
@@ -359,6 +379,8 @@ void QuantizeAffine8(float *ptr_float_weights, float *ptr_float_biases,
         *ptr_weight_scale_factor = MAX_OUT_MULTIPLIER * *ptr_weight_scale_factor;  //  increase dynamic range by max multiplier
         *ptr_output_scale_factor = input_scale_factor * *ptr_weight_scale_factor;
     }*/
+    
+    std::vector<float> row_max;
     float valueAcc = 0.0;
     for (uint32_t row = 0; row < num_rows; row++) {
         float scaled_row_max = 0;
@@ -371,14 +393,162 @@ void QuantizeAffine8(float *ptr_float_weights, float *ptr_float_biases,
             }
         }
 
+        row_max.emplace_back(scaled_row_max);
+
         value = scaled_row_max / static_cast<float>(MAX_VAL_1B_WEIGHT);
         ptr_int_biases[row].multiplier = (uint8_t) (value + 0.5);
+
         for (uint32_t col = 0; col < num_columns; col++) {
             int8_t *ptr_weight_8 = ptr_int_weights + (row * num_columns_padded + col);
             rounding_value = (ptr_float_weights[row * num_columns + col] > 0) ? 0.5f : -0.5f;
 
 
             value = ptr_float_weights[row * num_columns + col] * (*ptr_weight_scale_factor / ptr_int_biases[row].multiplier) + rounding_value;
+
+            if (value > 127.0f) {
+                *ptr_weight_8 = 127;
+                num_saturate++;
+                // if (ptr_int_biases[row].multiplier == 0) {
+                //     std::cout << value <<  "saturated to 127" << std::endl;
+                // }
+            } else if (value < -128.0f) {
+                *ptr_weight_8 = -128;
+                num_saturate++;
+                // if (ptr_int_biases[row].multiplier == 0) {
+                //     std::cout << value <<  "saturated to -128" << std::endl;
+                // }
+            } else {
+                *ptr_weight_8 = (int8_t) value;
+            }
+        }
+        for (uint32_t col = num_columns; col < num_columns_padded; col++) {
+            int8_t *ptr_weight_8 = ptr_int_weights + (row * num_columns_padded + col);
+            *ptr_weight_8 = 0;
+        }
+    }
+    for (uint32_t row = num_rows; row < num_rows_padded; row++) {
+        for (uint32_t col = 0; col < num_columns_padded; col++) {
+            int8_t *ptr_weight_8 = ptr_int_weights + (row*num_columns_padded + col);
+            *ptr_weight_8 = 0;
+        }
+        ptr_int_biases[row].multiplier = 0;
+    }
+
+    // bias value of the bas will be only used when input bias provided
+    if (ptr_float_biases != nullptr) {
+        QuantizeBias8(ptr_float_biases, ptr_int_biases, ptr_output_scale_factor, num_rows);
+    }
+
+    if (num_saturate > 0) {
+        QUANTWARNING("Warning:  %d / %d saturations in QuantizeAffine8()\n", num_saturate, num_rows * num_columns + num_rows);
+    }
+}
+
+#define VEC_WIDTH 4
+
+static inline float HorizontalMaxSse(__m128 x) {
+    // Calculates the sum of SSE Register - http://stackoverflow.com/a/35270026/195787
+    __m128 shufReg, sumsReg;
+    shufReg = _mm_movehdup_ps(x);        // Broadcast elements 3,1 to 2,0
+    sumsReg = _mm_max_ps(x, shufReg);
+    shufReg = _mm_movehl_ps(shufReg, sumsReg); // High Half -> Low Half
+    sumsReg = _mm_max_ss(sumsReg, shufReg);
+    return  _mm_cvtss_f32(sumsReg); // Result in the lower part of the SSE Register
+}
+
+float getRowMax(float* nums, uint32_t rows, uint32_t cols) {
+    // calculate row max
+    float* array = &nums[0];
+    const __m128 signmask = _mm_set1_ps(-0.0f);
+    __m128 max0 = _mm_loadu_ps(array);
+    max0 = _mm_andnot_ps(signmask, max0);
+    __m128 max1 = max0;
+
+    for (int i=0; i < (cols - VEC_WIDTH*2); i+=VEC_WIDTH*2) {
+        __m128 pxI0 = _mm_loadu_ps(array + i);
+        pxI0 = _mm_andnot_ps(signmask, pxI0);
+        max0  = _mm_max_ps(max0, pxI0);
+        __m128 pxI1 = _mm_loadu_ps(array + i + VEC_WIDTH);
+        pxI1 = _mm_andnot_ps(signmask, pxI1);
+        max1  = _mm_max_ps(max1, pxI1);
+    }
+
+    __m128 tail = _mm_loadu_ps(array + cols - VEC_WIDTH*2);
+    tail = _mm_andnot_ps(signmask, tail);
+    max0  = _mm_max_ps(max0, tail);
+
+    tail = _mm_loadu_ps(array + cols - VEC_WIDTH);
+    tail = _mm_andnot_ps(signmask, tail);
+    max1  = _mm_max_ps(max1, tail);
+
+    max0 = _mm_max_ps(max0, max1);
+    float max2 = HorizontalMaxSse(max0);
+
+    return max2;
+}
+
+void QuantizeAffine8_sse(float *ptr_float_weights, float *ptr_float_biases,
+                     int8_t *ptr_int_weights, intel_compound_bias_t *ptr_int_biases,
+                     float input_scale_factor, float *ptr_weight_scale_factor,
+                     float *ptr_output_scale_factor, uint32_t num_rows, uint32_t num_columns,
+                     uint32_t num_rows_padded, uint32_t num_columns_padded) {
+    if (ptr_int_biases == nullptr) {
+        THROW_IE_EXCEPTION << "Int biases are empty";
+    }
+    uint32_t num_saturate = 0;
+
+    // TODO: Removed the commented code from regular QuantizeAffine function
+    std::vector<float> row_max;
+    
+    uint32_t moves = num_columns / 4;
+    uint32_t leftout = num_columns % 4;
+
+    __m128 v, zero, half, neg_half, float_multiplier, mask, rounding_values, min, max, values;
+    zero = _mm_setzero_ps();
+    max = _mm_set1_ps(127.0f);
+    min = _mm_set1_ps(-128.0f);
+    half = _mm_set1_ps(0.5f);
+    neg_half = _mm_set1_ps(-0.5f);
+
+    for (uint32_t row = 0; row < num_rows; row++) {
+        float scaled_row_max = getRowMax(ptr_float_weights + row * num_columns, num_rows, num_columns) * *ptr_weight_scale_factor;
+        float value = scaled_row_max / static_cast<float>(MAX_VAL_1B_WEIGHT);
+        ptr_int_biases[row].multiplier = (uint8_t) (value + 0.5);
+
+        __m128 scalefactor_vec = _mm_set1_ps(*ptr_weight_scale_factor);
+        __m128 multiplier_vec = _mm_set1_ps(ptr_int_biases[row].multiplier);
+        float_multiplier = _mm_div_ps(scalefactor_vec, multiplier_vec);
+
+        float* ptr_flot_weights = ptr_float_weights + (row * num_columns);
+        int8_t *ptr_weight_8 = ptr_int_weights + (row * num_columns_padded);
+
+        for (int j =0; j  < moves; j++, ptr_flot_weights +=4, ptr_weight_8 +=4) {
+            v = _mm_loadu_ps(ptr_flot_weights);
+
+            //rounding_values = (v>0) ? 0.5f : -0.5f;
+            mask = _mm_min_ps(v, zero);
+            rounding_values = _mm_blendv_ps(half, neg_half, mask);
+
+            // values = v * scale_factores +  rounding_values
+            values = _mm_mul_ps(v, float_multiplier);
+            values = _mm_add_ps(values, rounding_values);
+
+            // shrink to <-128.0f, 127.0f>
+            __m128 tmps = _mm_cmpord_ps(values, max);
+            values = _mm_and_ps(values, tmps); // Needed to handle NaN values
+            values = _mm_min_ps(values, max);
+            values = _mm_max_ps(values, min);
+
+            for (int k=0; k < 4; k++) {
+                auto a = (int8_t)accessmember(values, k);
+                ptr_weight_8[k] = a;
+            }
+        }
+
+        for (int j =0; j < leftout; j++, ptr_weight_8++, ptr_float_weights++) {
+            float rounding_value = (ptr_float_weights[j] > 0) ? 0.5f : -0.5f;
+
+            float value = ptr_float_weights[j] * (*ptr_weight_scale_factor / ptr_int_biases[row].multiplier) + rounding_value;
             if (value > 127.0) {
                 *ptr_weight_8 = 127;
                 num_saturate++;
@@ -389,11 +559,13 @@ void QuantizeAffine8(float *ptr_float_weights, float *ptr_float_biases,
                 *ptr_weight_8 = (int8_t) value;
             }
         }
+
         for (uint32_t col = num_columns; col < num_columns_padded; col++) {
             int8_t *ptr_weight_8 = ptr_int_weights + (row * num_columns_padded + col);
             *ptr_weight_8 = 0;
         }
     }
+
     for (uint32_t row = num_rows; row < num_rows_padded; row++) {
         for (uint32_t col = 0; col < num_columns_padded; col++) {
             int8_t *ptr_weight_8 = ptr_int_weights + (row*num_columns_padded + col);
