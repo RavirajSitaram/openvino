@@ -245,12 +245,21 @@ endif()
 
 ie_cpack_add_component(core REQUIRED DEPENDS ${core_components})
 
+message(ERROR "raviraj cpack lib path ${IE_CPACK_LIBRARY_PATH}")
+
 install(DIRECTORY "${IE_MAIN_SOURCE_DIR}/include" DESTINATION ${IE_CPACK_IE_DIR}
         COMPONENT core)
-install(TARGETS ${TARGET_NAME}
-        RUNTIME DESTINATION ${IE_CPACK_RUNTIME_PATH} COMPONENT core
-        ARCHIVE DESTINATION ${IE_CPACK_ARCHIVE_PATH} COMPONENT core
-        LIBRARY DESTINATION ${IE_CPACK_LIBRARY_PATH} COMPONENT core)
+if (CHROMEOS)
+    install(TARGETS ${TARGET_NAME}
+                RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR} COMPONENT core
+                ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR} COMPONENT core
+                LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR} COMPONENT core)    
+elseif()
+    install(TARGETS ${TARGET_NAME}
+                RUNTIME DESTINATION ${IE_CPACK_RUNTIME_PATH} COMPONENT core
+                ARCHIVE DESTINATION ${IE_CPACK_ARCHIVE_PATH} COMPONENT core
+                LIBRARY DESTINATION ${IE_CPACK_LIBRARY_PATH} COMPONENT core)
+endif()
 install(FILES "${OpenVINO_BINARY_DIR}/share/ie_parallel.cmake"
               "${OpenVINO_BINARY_DIR}/share/InferenceEngineConfig.cmake"
               "${OpenVINO_BINARY_DIR}/share/InferenceEngineConfig-version.cmake"

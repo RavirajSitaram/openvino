@@ -37,8 +37,19 @@ foreach(component IN LISTS openvino_export_components)
 endforeach()
 
 if (${TARGET_OS} STREQUAL "CHROMEOS")
+    message(ERROR "raviraj inside CHROMEOS flag")
     add_definitions(-DCHROMEOS)
 endif()
+
+if (DEFINED CHROMEOS)
+    message(ERROR "raviraj inside CHROMEOS flag 2")
+endif()
+
+if (CHROMEOS)
+    message(ERROR "raviraj inside CHROMEOS flag 3")
+endif()
+
+message(ERROR "raviraj ${CMAKE_INSTALL_LIBDIR}")
 
 #
 # Build
@@ -109,7 +120,7 @@ function(build_ngraph)
     ie_cpack_add_component(ngraph)
 
     set(SDL_cmake_included ON)
-    set(NGRAPH_COMPONENT_PREFIX "deployment_tools/ngraph/")
+    #set(NGRAPH_COMPONENT_PREFIX "deployment_tools/ngraph/")
     add_subdirectory(ngraph)
     set(NGRAPH_LIBRARIES ngraph PARENT_SCOPE)
     set(NGRAPH_REF_LIBRARIES ngraph_reference PARENT_SCOPE)
